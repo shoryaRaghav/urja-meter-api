@@ -1,0 +1,15 @@
+{
+  "data": [
+    {
+      "meterId": "J100000",
+      "serialNo": "SE33962",
+      "make": "HPL",
+      "phaseType": "single",
+      "installStatus": "Decommissioned",
+      "dtCode": "DT-001"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20
+}
