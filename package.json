@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "dotenv": "^18.0.9",
-    "express": "^5.3.0"
+    "express": "^5.3.0",
+    "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
     "supertest": "^7.3.1",

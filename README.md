@@ -97,6 +97,13 @@ curl "http://localhost:3000/api/meters/J100000/consumption?delta=true" \
   -H "Authorization: Bearer <your-urja-session-token>"
 ```
 
+### Exploring it without curl
+
+Open **http://localhost:3000/docs** — an interactive API browser generated
+from `openapi.json` ([Swagger UI](https://github.com/swagger-api/swagger-ui)).
+Click **Authorize** top-right, paste your Urja session token, and you can
+click through every endpoint and send real requests without a terminal.
+
 ## Testing
 
 ```bash
