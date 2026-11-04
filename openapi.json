@@ -1,0 +1,283 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Urja Meter API",
+    "description": "A clean, documented REST API in front of the legacy Urja Meter Ops portal (https://urja-ops.flockenergy.tech), which has no API of its own. Exposes meter details, network hierarchy, and consumption data as well-structured JSON. See PROTOCOL.md for how the upstream portal's behavior was discovered, and README.md for the authentication model this API uses.",
+    "version": "1.0.0",
+    "license": { "name": "MIT" }
+  },
+  "servers": [{ "url": "http://localhost:3000", "description": "Local development" }],
+  "security": [{ "urjaSessionAuth": [] }],
+  "tags": [
+    { "name": "Meters", "description": "Meter nameplate details, network hierarchy, and consumption" },
+    { "name": "Transformers", "description": "Distribution transformers (DTs) and the meters under them" },
+    { "name": "Health", "description": "Service health check" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "tags": ["Health"],
+        "summary": "Health check",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "status": { "type": "string", "example": "ok" } } } } }
+          }
+        }
+      }
+    },
+    "/api/meters": {
+      "get": {
+        "operationId": "listMeters",
+        "tags": ["Meters"],
+        "summary": "Search/list meters",
+        "description": "Proxies the upstream portal's meter search. Returns only the fields the upstream endpoint actually provides — installType, build, and hierarchy are NOT available here; fetch a single meter's detail for those.",
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "type": "string", "default": "" }, "description": "Free-text search on meter number or serial. Empty returns the full list. Case-insensitive." },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of meter summaries",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaginatedMeterSummaries" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "502": { "$ref": "#/components/responses/UpstreamFailure" }
+        }
+      }
+    },
+    "/api/meters/{meterId}": {
+      "get": {
+        "operationId": "getMeter",
+        "tags": ["Meters"],
+        "summary": "Get a single meter's full details",
+        "description": "Merges live upstream data with a documented bulk-export snapshot for fields the live upstream search endpoint never returns (installType, build, hierarchy). The response's `sources` field states which source backed each part. See PROTOCOL.md \"No live single-meter hierarchy endpoint\" for why this merge exists.",
+        "parameters": [{ "name": "meterId", "in": "path", "required": true, "schema": { "type": "string" }, "example": "J100000" }],
+        "responses": {
+          "200": {
+            "description": "Full meter detail",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MeterDetail" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "Meter not found in either the live upstream search or the snapshot", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "502": { "$ref": "#/components/responses/UpstreamFailure" }
+        }
+      }
+    },
+    "/api/meters/{meterId}/consumption": {
+      "get": {
+        "operationId": "getMeterConsumption",
+        "tags": ["Meters"],
+        "summary": "Get a meter's consumption readings",
+        "description": "Proxies the upstream portal's energy endpoint. Readings are cumulative meter register values by default, matching the portal. Pass delta=true to also receive per-interval usage computed from consecutive readings.",
+        "parameters": [
+          { "name": "meterId", "in": "path", "required": true, "schema": { "type": "string" }, "example": "J100000" },
+          { "name": "delta", "in": "query", "schema": { "type": "boolean", "default": false }, "description": "Include consumptionKwh/consumptionKvah (per-interval deltas) on each reading." }
+        ],
+        "responses": {
+          "200": {
+            "description": "Consumption readings",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ConsumptionResponse" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "502": { "$ref": "#/components/responses/UpstreamFailure" }
+        }
+      }
+    },
+    "/api/transformers": {
+      "get": {
+        "operationId": "listTransformers",
+        "tags": ["Transformers"],
+        "summary": "List distribution transformers",
+        "parameters": [{ "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }],
+        "responses": {
+          "200": {
+            "description": "Paginated list of transformers",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaginatedTransformers" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "502": { "$ref": "#/components/responses/UpstreamFailure" }
+        }
+      }
+    },
+    "/api/transformers/{code}/meters": {
+      "get": {
+        "operationId": "listMetersByTransformer",
+        "tags": ["Transformers"],
+        "summary": "List meters under a transformer",
+        "description": "Not available on the upstream portal (transformer rows aren't clickable, and there's no reverse DT->meters lookup there). Synthesized from the bulk-export snapshot by filtering on dtCode — see `source` in the response.",
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" }, "example": "DT-007" }],
+        "responses": {
+          "200": {
+            "description": "Meters under this transformer, per the snapshot",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TransformerMeters" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "urjaSessionAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Urja Meter Ops session token",
+        "description": "The caller's own Urja Meter Ops session token (obtained by logging into the portal themselves). This API never logs in on the caller's behalf and never stores a session — see README.md \"Authentication\". An X-Urja-Session-Token header is also accepted as an alias."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or unrecognized session token",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "UpstreamFailure": {
+        "description": "The upstream Urja Meter Ops portal failed or was unreachable",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": { "type": "string" },
+              "upstreamStatus": { "type": "integer", "nullable": true, "description": "Set only when the error originated from the upstream portal." }
+            }
+          }
+        }
+      },
+      "MeterSummary": {
+        "type": "object",
+        "description": "Fields the live upstream search endpoint actually returns.",
+        "properties": {
+          "meterId": { "type": "string", "example": "J100000" },
+          "serialNo": { "type": "string", "example": "SE33962" },
+          "make": { "type": "string", "example": "HPL" },
+          "phaseType": { "type": "string", "enum": ["single", "three"] },
+          "installStatus": { "type": "string", "enum": ["Installed", "Faulty", "Decommissioned"] },
+          "dtCode": { "type": "string", "nullable": true, "example": "DT-001" }
+        }
+      },
+      "PaginatedMeterSummaries": {
+        "type": "object",
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/MeterSummary" } },
+          "page": { "type": "integer" },
+          "pageSize": { "type": "integer", "nullable": true },
+          "total": { "type": "integer", "nullable": true }
+        }
+      },
+      "Geo": {
+        "type": "object",
+        "nullable": true,
+        "properties": { "lat": { "type": "number", "nullable": true }, "lng": { "type": "number", "nullable": true } }
+      },
+      "HierarchyLevel": {
+        "type": "object",
+        "properties": { "name": { "type": "string", "nullable": true }, "code": { "type": "string", "nullable": true } }
+      },
+      "Hierarchy": {
+        "type": "object",
+        "nullable": true,
+        "description": "7-level network hierarchy. Empty strings from upstream are normalized to null. dt.name is always resolved live from /portal/dts, never trusted from the snapshot's embedded copy (see PROTOCOL.md DT-007 finding).",
+        "properties": {
+          "zone": { "$ref": "#/components/schemas/HierarchyLevel" },
+          "circle": { "$ref": "#/components/schemas/HierarchyLevel" },
+          "division": { "$ref": "#/components/schemas/HierarchyLevel" },
+          "subdivision": { "$ref": "#/components/schemas/HierarchyLevel" },
+          "substation": { "$ref": "#/components/schemas/HierarchyLevel" },
+          "feeder": { "$ref": "#/components/schemas/HierarchyLevel" },
+          "dt": { "$ref": "#/components/schemas/HierarchyLevel" }
+        }
+      },
+      "MeterDetail": {
+        "type": "object",
+        "properties": {
+          "meterId": { "type": "string" },
+          "serialNo": { "type": "string", "nullable": true },
+          "make": { "type": "string", "nullable": true },
+          "phaseType": { "type": "string", "nullable": true },
+          "installStatus": { "type": "string", "nullable": true },
+          "installType": { "type": "string", "nullable": true, "description": "Only ever available from the snapshot — the live search endpoint doesn't return it." },
+          "build": { "type": "string", "nullable": true, "enum": ["legacy", "v2", null], "description": "Real backend data not shown anywhere in the upstream UI. Only available from the snapshot." },
+          "dtCode": { "type": "string", "nullable": true },
+          "geo": { "$ref": "#/components/schemas/Geo" },
+          "hierarchy": { "$ref": "#/components/schemas/Hierarchy" },
+          "sources": {
+            "type": "object",
+            "description": "Which source backed each part of this response.",
+            "properties": {
+              "nameplateCore": { "type": "string", "enum": ["live", "snapshot"] },
+              "installType": { "type": "string", "nullable": true },
+              "build": { "type": "string", "nullable": true },
+              "hierarchy": { "type": "string", "nullable": true },
+              "geo": { "type": "string" }
+            }
+          }
+        }
+      },
+      "ConsumptionReading": {
+        "type": "object",
+        "properties": {
+          "timestamp": { "type": "string", "format": "date-time", "description": "ISO 8601, converted from upstream's DD/MM/YYYY HH:mm." },
+          "kwh": { "type": "number", "description": "Cumulative register reading, not a per-interval delta." },
+          "kvah": { "type": "number" },
+          "voltR": { "type": "number" },
+          "consumptionKwh": { "type": "number", "nullable": true, "description": "Only present when ?delta=true. null on the first reading (no prior value to diff against)." },
+          "consumptionKvah": { "type": "number", "nullable": true }
+        }
+      },
+      "ConsumptionResponse": {
+        "type": "object",
+        "properties": {
+          "meterId": { "type": "string" },
+          "readings": { "type": "array", "items": { "$ref": "#/components/schemas/ConsumptionReading" } }
+        }
+      },
+      "Transformer": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string", "example": "DT-007" },
+          "name": { "type": "string", "example": "Sanganer DT 7" },
+          "feederCode": { "type": "string", "example": "F-007" },
+          "capacityKva": { "type": "number", "example": 63 }
+        }
+      },
+      "PaginatedTransformers": {
+        "type": "object",
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/Transformer" } },
+          "page": { "type": "integer" },
+          "pageSize": { "type": "integer", "nullable": true },
+          "total": { "type": "integer", "nullable": true }
+        }
+      },
+      "TransformerMeters": {
+        "type": "object",
+        "properties": {
+          "dtCode": { "type": "string" },
+          "source": { "type": "string", "enum": ["snapshot"] },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "meterId": { "type": "string" },
+                "serialNo": { "type": "string" },
+                "make": { "type": "string" },
+                "phaseType": { "type": "string" },
+                "installStatus": { "type": "string" },
+                "hierarchy": { "$ref": "#/components/schemas/Hierarchy" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
