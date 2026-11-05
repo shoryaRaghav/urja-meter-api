@@ -48,6 +48,28 @@
         }
       }
     },
+    "/api/meters/export": {
+      "get": {
+        "operationId": "exportMeters",
+        "tags": ["Meters"],
+        "summary": "Authorised bulk data extraction",
+        "description": "Exports nameplate + network hierarchy + geo for every meter in one response, mirroring the upstream portal's own 'Export all meters' feature through this API's normalized schema. Still gated by the same session auth as every other endpoint. Metadata only — does not include consumption (403 meters x hundreds of readings each would be impractical in one response; fetch /api/meters/{meterId}/consumption per meter instead). Performs one full paginated crawl of the upstream meter search and transformer list per call rather than per-meter lookups; see PROTOCOL.md and architecture-decisions.md for the efficiency reasoning.",
+        "parameters": [
+          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["json", "csv"], "default": "json" }, "description": "csv returns a flattened, downloadable file (Content-Disposition: attachment)." }
+        ],
+        "responses": {
+          "200": {
+            "description": "All meters, metadata only",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/BulkExportResponse" } },
+              "text/csv": { "schema": { "type": "string" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "502": { "$ref": "#/components/responses/UpstreamFailure" }
+        }
+      }
+    },
     "/api/meters/{meterId}": {
       "get": {
         "operationId": "getMeter",
@@ -219,6 +241,14 @@
               "geo": { "type": "string" }
             }
           }
+        }
+      },
+      "BulkExportResponse": {
+        "type": "object",
+        "properties": {
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "total": { "type": "integer" },
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/MeterDetail" } }
         }
       },
       "ConsumptionReading": {

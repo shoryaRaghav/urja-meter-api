@@ -27,6 +27,40 @@ the bulk export, empty-string hierarchy fields, a distribution transformer
 with two different names depending on which record you ask, inconsistent
 decimal formatting on consumption readings).
 
+## Endpoints
+
+| Method & path | What it does |
+|---|---|
+| `GET /health` | Liveness check, no auth |
+| `GET /api/meters?q=&page=` | Search/list meters (live) |
+| `GET /api/meters/export?format=json\|csv` | **Authorised bulk data extraction** — every meter's nameplate + hierarchy + geo in one response |
+| `GET /api/meters/:meterId` | One meter's full detail, live + snapshot merged |
+| `GET /api/meters/:meterId/consumption?delta=true` | Consumption readings, raw or with per-interval deltas |
+| `GET /api/transformers?page=` | List distribution transformers (live) |
+| `GET /api/transformers/:code/meters` | Meters under a transformer (not available upstream — synthesized from the snapshot) |
+
+Full request/response detail for each is in [openapi.json](./openapi.json), browsable at `/docs` once the server is running (see below).
+
+### Bulk data extraction
+
+`GET /api/meters/export` mirrors the portal's own "Export all meters"
+feature, through this API's normalized schema instead of the portal's raw
+one. It's still gated by the same `Authorization` header as everything else
+— "authorised" here means a valid Urja session, same bar as every other
+endpoint, not a separate mechanism. Metadata only (no consumption — see
+"Known limitations"). It does one full paginated crawl of the upstream
+meter search and transformer list per call (not a lookup per meter), so
+it's efficient, but it still has to wait on ~23 upstream requests; it's not
+instant.
+
+```bash
+curl http://localhost:3000/api/meters/export \
+  -H "Authorization: Bearer <your-urja-session-token>" | head -c 500
+
+curl "http://localhost:3000/api/meters/export?format=csv" \
+  -H "Authorization: Bearer <your-urja-session-token>" -o meters-export.csv
+```
+
 ## Authentication
 
 **This API never logs into Urja Meter Ops and never stores a session.**

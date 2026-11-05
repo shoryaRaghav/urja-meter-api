@@ -92,6 +92,61 @@ describe('GET /api/meters', () => {
   });
 });
 
+describe('GET /api/meters/export (authorised bulk data extraction)', () => {
+  it('returns JSON by default, merging a full live crawl with the snapshot, each record carrying sources', async () => {
+    upstream.intercept({ path: '/portal/meters/search?q=&page=1', method: 'GET' }).reply(200, jsonReply({
+      data: [{ meterId: 'J100000', serialNo: 'SE33962', make: 'HPL', phaseType: 'single', installStatus: 'Decommissioned', dtCode: 'DT-001' }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    }).data);
+    upstream.intercept({ path: '/portal/dts?page=1', method: 'GET' }).reply(200, jsonReply({
+      data: [{ code: 'DT-001', name: 'Malviya Nagar DT 1', feederCode: 'F-001', capacityKva: 100 }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    }).data);
+
+    const res = await request(app).get('/api/meters/export').set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.generatedAt).toBeDefined();
+    const record = res.body.data[0];
+    expect(record.meterId).toBe('J100000');
+    expect(record.installType).toBe('Whole Current'); // from the snapshot, not live
+    expect(record.hierarchy.dt.name).toBe('Malviya Nagar DT 1'); // canonical, live /portal/dts
+    expect(record.geo).toEqual({ lat: 26.938961002479868, lng: 75.83095696146852 }); // from snapshot, not a live /geo call
+    expect(record.sources.geo).toBe('snapshot');
+    // No upstream /geo or /energy calls should have happened at all — asserted
+    // implicitly: mockUpstream's agent has net connect disabled, so an
+    // unexpected call here would throw rather than silently succeed.
+  });
+
+  it('returns CSV with ?format=csv', async () => {
+    upstream.intercept({ path: '/portal/meters/search?q=&page=1', method: 'GET' }).reply(200, jsonReply({
+      data: [{ meterId: 'J100000', serialNo: 'SE33962', make: 'HPL', phaseType: 'single', installStatus: 'Decommissioned', dtCode: 'DT-001' }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    }).data);
+    upstream.intercept({ path: '/portal/dts?page=1', method: 'GET' }).reply(200, jsonReply({
+      data: [{ code: 'DT-001', name: 'Malviya Nagar DT 1', feederCode: 'F-001', capacityKva: 100 }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    }).data);
+
+    const res = await request(app).get('/api/meters/export?format=csv').set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/csv/);
+    expect(res.headers['content-disposition']).toContain('meters-export.csv');
+    expect(res.text).toContain('meterId,serialNo');
+    expect(res.text).toContain('J100000,SE33962,HPL');
+  });
+});
+
 describe('GET /api/meters/:meterId', () => {
   it('merges live search + geo with the snapshot\'s installType/build/hierarchy, and reports sources', async () => {
     upstream.intercept({ path: '/portal/meters/search?q=J100000&page=1', method: 'GET' }).reply(200, jsonReply(fixture('meterSearchJ100000.json')).data);

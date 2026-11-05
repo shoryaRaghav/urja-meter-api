@@ -6,6 +6,7 @@ import {
   normalizeEnergyReading,
   withConsumptionDeltas,
   normalizeHierarchy,
+  mergeMeterRecord,
 } from '../../src/utils/normalize.js';
 
 describe('emptyToNull', () => {
@@ -114,5 +115,54 @@ describe('normalizeHierarchy', () => {
 
   it('returns null for missing hierarchy rather than throwing', () => {
     expect(normalizeHierarchy(null)).toBeNull();
+  });
+});
+
+describe('mergeMeterRecord', () => {
+  const liveMatch = { meterId: 'J100000', serialNo: 'SE33962', make: 'HPL', phaseType: 'single', installStatus: 'Decommissioned', dtCode: 'DT-001' };
+  const snapshot = {
+    meterId: 'J100000',
+    serialNo: 'SE33962',
+    installType: 'Whole Current',
+    build: 'legacy',
+    hierarchy: {
+      zone: { name: 'Jaipur Zone 1', code: 'Z-01' },
+      circle: { name: 'Circle 1', code: 'C-01' },
+      division: { name: 'Division 1', code: 'D-01' },
+      subdivision: { name: 'Subdivision 1', code: 'SD-01' },
+      substation: { name: 'Substation 1', code: 'SS-01' },
+      feeder: { name: 'Feeder 1', code: 'F-001' },
+      dt: { name: 'stale name', code: 'DT-001' },
+    },
+  };
+
+  it('prefers live nameplate fields and snapshot-only fields, reporting sources per part', () => {
+    const result = mergeMeterRecord({
+      meterId: 'J100000',
+      liveMatch,
+      snapshot,
+      canonicalDtName: 'Malviya Nagar DT 1',
+      geo: { lat: 1, lng: 2 },
+      geoSource: 'live',
+    });
+
+    expect(result.serialNo).toBe('SE33962'); // live
+    expect(result.installType).toBe('Whole Current'); // snapshot-only
+    expect(result.build).toBe('legacy'); // snapshot-only
+    expect(result.hierarchy.dt.name).toBe('Malviya Nagar DT 1'); // canonical, not snapshot's "stale name"
+    expect(result.geo).toEqual({ lat: 1, lng: 2 });
+    expect(result.sources).toEqual({
+      nameplateCore: 'live',
+      installType: 'snapshot',
+      build: 'snapshot',
+      hierarchy: 'snapshot (DT name always live)',
+      geo: 'live',
+    });
+  });
+
+  it('falls back to the snapshot for nameplate fields when there is no live match', () => {
+    const result = mergeMeterRecord({ meterId: 'J100000', liveMatch: undefined, snapshot, geo: null, geoSource: null });
+    expect(result.sources.nameplateCore).toBe('snapshot');
+    expect(result.installType).toBe('Whole Current');
   });
 });

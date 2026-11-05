@@ -99,3 +99,40 @@ export function normalizeHierarchy(hierarchy, canonicalDtName) {
   }
   return normalized;
 }
+
+/**
+ * Shared by GET /api/meters/:meterId and GET /api/meters/export (bulk
+ * extraction) so both endpoints merge live + snapshot data with the exact
+ * same precedence instead of two copies quietly drifting apart.
+ *
+ * Precedence: live search result is authoritative for the fields it
+ * returns (meterId, serialNo, make, phaseType, installStatus, dtCode);
+ * the snapshot supplies installType, build, and hierarchy, none of which
+ * live search ever returns (see PROTOCOL.md). geo/geoSource are passed in
+ * rather than computed here, since the single-meter endpoint sources geo
+ * live (one extra call is fine for one meter) while the bulk endpoint
+ * sources it from the snapshot (403 live /geo calls is not fine) — see
+ * architecture-decisions.md "4b" and the bulk-export route's doc comment.
+ */
+export function mergeMeterRecord({ meterId, liveMatch, snapshot, canonicalDtName, geo, geoSource }) {
+  const dtCode = emptyToNull(liveMatch?.dtCode ?? snapshot?.dtCode);
+  return {
+    meterId,
+    serialNo: liveMatch?.serialNo ?? snapshot?.serialNo ?? null,
+    make: liveMatch?.make ?? snapshot?.make ?? null,
+    phaseType: liveMatch?.phaseType ?? snapshot?.phaseType ?? null,
+    installStatus: liveMatch?.installStatus ?? snapshot?.installStatus ?? null,
+    installType: snapshot?.installType ?? null,
+    build: snapshot?.build ?? null,
+    dtCode,
+    geo: geo ?? null,
+    hierarchy: normalizeHierarchy(snapshot?.hierarchy, canonicalDtName),
+    sources: {
+      nameplateCore: liveMatch ? 'live' : 'snapshot',
+      installType: snapshot ? 'snapshot' : null,
+      build: snapshot ? 'snapshot' : null,
+      hierarchy: snapshot ? 'snapshot (DT name always live)' : null,
+      geo: geoSource ?? null,
+    },
+  };
+}

@@ -43,15 +43,35 @@ async function upstreamGet(path, sessionToken) {
 
 /**
  * GET /portal/meters/search?q=&page=
- * Confirmed fields (from the rendered meters list + bulk export, NOT a raw
- * capture of this specific endpoint — see PROTOCOL.md "documented
- * assumptions"): meterId, serialNo, make, phaseType, installStatus,
- * installType, dtCode. Envelope assumed `{data, total, page, pageSize}` by
- * analogy with /portal/dts, not yet confirmed raw for this endpoint.
+ * Confirmed raw shape (see PROTOCOL.md): {"data": [{meterId, serialNo,
+ * make, phaseType, installStatus, dtCode}], "total", "page", "pageSize"}.
+ * Does NOT return installType, build, or hierarchy — confirmed absent, not
+ * assumed.
  */
 export function searchMeters({ q = '', page = 1 } = {}, sessionToken) {
   const qs = new URLSearchParams({ q, page: String(page) });
   return upstreamGet(`/portal/meters/search?${qs}`, sessionToken);
+}
+
+/**
+ * Walks every page of /portal/meters/search (q="") and returns the full
+ * flat list. Used by the bulk-export endpoint to get a fresh nameplate
+ * list for all meters with ~21 requests total, instead of one search call
+ * per meter. The 1000-page cap is a defensive stop against a malformed or
+ * unexpectedly huge upstream response, not an expected real limit.
+ */
+export async function searchAllMeters(sessionToken) {
+  const results = [];
+  let page = 1;
+  for (;;) {
+    const res = await searchMeters({ q: '', page }, sessionToken);
+    const batch = res.data ?? [];
+    results.push(...batch);
+    const total = res.total ?? results.length;
+    if (batch.length === 0 || results.length >= total || page > 1000) break;
+    page += 1;
+  }
+  return results;
 }
 
 /**
@@ -80,4 +100,26 @@ export function getMeterEnergy(meterId, sessionToken) {
 export function listTransformers({ page = 1 } = {}, sessionToken) {
   const qs = new URLSearchParams({ page: String(page) });
   return upstreamGet(`/portal/dts?${qs}`, sessionToken);
+}
+
+/**
+ * Walks every page of /portal/dts and returns the full flat list. Used by
+ * the bulk-export endpoint to build one dtCode -> canonical name map per
+ * export call, instead of calling /portal/dts separately for every meter
+ * (see the per-meter doc comment in routes/meters.js for why that's the
+ * scaling concern this function exists to avoid). Same defensive page cap
+ * as searchAllMeters.
+ */
+export async function listAllTransformers(sessionToken) {
+  const results = [];
+  let page = 1;
+  for (;;) {
+    const res = await listTransformers({ page }, sessionToken);
+    const batch = res.data ?? [];
+    results.push(...batch);
+    const total = res.total ?? results.length;
+    if (batch.length === 0 || results.length >= total || page > 1000) break;
+    page += 1;
+  }
+  return results;
 }

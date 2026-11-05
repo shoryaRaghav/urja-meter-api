@@ -3,11 +3,12 @@ import * as urjaClient from '../services/urjaClient.js';
 import {
   normalizeGeo,
   normalizeEnergyReading,
-  normalizeHierarchy,
   withConsumptionDeltas,
   emptyToNull,
+  mergeMeterRecord,
 } from '../utils/normalize.js';
 import { getSnapshotRecord } from '../data/hierarchySnapshot.js';
+import { recordsToCsv } from '../utils/csv.js';
 import { ApiError } from '../utils/errors.js';
 
 export const metersRouter = Router();
@@ -48,16 +49,88 @@ metersRouter.get('/', async (req, res) => {
 });
 
 /**
+ * GET /api/meters/export?format=json|csv
+ *
+ * "Authorised bulk data extraction" — exports nameplate + hierarchy + geo
+ * for every meter in one response, mirroring the portal's own "Export all
+ * meters" feature but through our normalized schema, with the exact same
+ * live/snapshot provenance as GET /api/meters/:meterId below (same
+ * mergeMeterRecord() call, same `sources` reporting per record).
+ *
+ * Still gated by the same session auth as every other endpoint —
+ * "authorised" means a valid Urja session token is required, the same bar
+ * as everything else. Nothing in the material this was built from called
+ * for a separate bulk-specific credential; if the real requirement does,
+ * that's an easy addition on top of this (see README "Known limitations").
+ *
+ * Deliberately metadata-only, no consumption: 403 meters x up to 337
+ * readings each would be 100k+ rows per export and ~400 extra upstream
+ * calls, with no demonstrated need. Fetch /consumption per meter instead.
+ *
+ * Efficiency: does ONE full paginated crawl of /portal/meters/search
+ * (~21 requests for 403 meters at pageSize 20) and ONE of /portal/dts
+ * (2 requests) per export call, rather than once per meter — the exact
+ * scaling concern the per-meter endpoint's doc comment flags below is what
+ * this endpoint avoids by batching. Geo and hierarchy/installType/build
+ * come from the snapshot for every record here (not live), since a live
+ * /geo call per meter would mean 403 more requests — see
+ * architecture-decisions.md "4b" for why the snapshot is a confirmed,
+ * permanent source for those fields, not a shortcut. No caching across
+ * requests, consistent with the rest of v1.
+ *
+ * Registered BEFORE /:meterId below — otherwise Express would match
+ * "export" as a meterId value and this route would never be reached.
+ */
+metersRouter.get('/export', async (req, res) => {
+  const format = req.query.format === 'csv' ? 'csv' : 'json';
+
+  const [liveMeters, liveDts] = await Promise.all([
+    urjaClient.searchAllMeters(req.urjaSessionToken),
+    urjaClient.listAllTransformers(req.urjaSessionToken),
+  ]);
+
+  const dtNameByCode = new Map(liveDts.map((d) => [d.code, d.name]));
+
+  const records = liveMeters.map((liveMatch) => {
+    const snapshot = getSnapshotRecord(liveMatch.meterId);
+    const dtCode = emptyToNull(liveMatch.dtCode ?? snapshot?.dtCode);
+    return mergeMeterRecord({
+      meterId: liveMatch.meterId,
+      liveMatch,
+      snapshot,
+      canonicalDtName: dtCode ? dtNameByCode.get(dtCode) : undefined,
+      geo: snapshot?.geo ?? null,
+      geoSource: snapshot ? 'snapshot' : null,
+    });
+  });
+
+  if (format === 'csv') {
+    res.set('Content-Type', 'text/csv');
+    res.set('Content-Disposition', 'attachment; filename="meters-export.csv"');
+    return res.send(recordsToCsv(records));
+  }
+
+  res.json({
+    generatedAt: new Date().toISOString(),
+    total: records.length,
+    data: records,
+  });
+});
+
+/**
  * GET /api/meters/:meterId
  *
- * Merges two sources with explicit, reported precedence:
+ * Merges two sources via the shared mergeMeterRecord() (see
+ * utils/normalize.js), with explicit, reported precedence:
  *  - live /portal/meters/search: authoritative for meterId, serialNo, make,
  *    phaseType, installStatus, dtCode (confirmed raw — see PROTOCOL.md)
  *  - bulk-export snapshot (src/data/hierarchySnapshot.js): supplies
  *    installType, build, and hierarchy, none of which the live search
  *    endpoint returns at all — this is a confirmed, permanent design
  *    decision, not a placeholder (see architecture-decisions.md "4b")
- *  - geo: always live, via /portal/meters/:id/geo
+ *  - geo: always live here, via /portal/meters/:id/geo (one extra call is
+ *    fine for a single meter — contrast with GET /api/meters/export, which
+ *    sources geo from the snapshot instead, since 403 live calls isn't)
  *  - hierarchy.dt.name: always live, via /portal/dts, overriding whatever
  *    the snapshot's embedded copy says (DT-007 finding — that copy goes
  *    stale)
@@ -88,7 +161,8 @@ metersRouter.get('/:meterId', async (req, res) => {
     // meter-detail request to stay correct (always-fresh DT name) rather
     // than fast. See README "Known limitations" re: caching being out of
     // scope for v1 — this is the first place caching /portal/dts would pay
-    // off if this service needed to scale.
+    // off if this service needed to scale. GET /api/meters/export is the
+    // batched alternative when fetching many meters at once.
     const dts = await urjaClient.listTransformers({ page: 1 }, req.urjaSessionToken);
     let dtEntry = (dts.data ?? []).find((d) => d.code === dtCode);
     if (!dtEntry && dts.total > (dts.pageSize ?? 20)) {
@@ -98,25 +172,16 @@ metersRouter.get('/:meterId', async (req, res) => {
     canonicalDtName = dtEntry?.name;
   }
 
-  res.json({
-    meterId,
-    serialNo: liveMatch?.serialNo ?? snapshot?.serialNo ?? null,
-    make: liveMatch?.make ?? snapshot?.make ?? null,
-    phaseType: liveMatch?.phaseType ?? snapshot?.phaseType ?? null,
-    installStatus: liveMatch?.installStatus ?? snapshot?.installStatus ?? null,
-    installType: snapshot?.installType ?? null,
-    build: snapshot?.build ?? null,
-    dtCode,
-    geo: normalizeGeo(geoResult.data),
-    hierarchy: normalizeHierarchy(snapshot?.hierarchy, canonicalDtName),
-    sources: {
-      nameplateCore: liveMatch ? 'live' : 'snapshot',
-      installType: snapshot ? 'snapshot' : null,
-      build: snapshot ? 'snapshot' : null,
-      hierarchy: snapshot ? 'snapshot (DT name always live)' : null,
-      geo: 'live',
-    },
-  });
+  res.json(
+    mergeMeterRecord({
+      meterId,
+      liveMatch,
+      snapshot,
+      canonicalDtName,
+      geo: normalizeGeo(geoResult.data),
+      geoSource: 'live',
+    })
+  );
 });
 
 /**

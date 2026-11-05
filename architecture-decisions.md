@@ -31,6 +31,19 @@ Our API's whole job is translating the portal's undocumented, inconsistent inter
 - hierarchy: empty-string fields (`""`) → `null`, so "is this field present" is a reliable check
 - DT naming: always resolved via `/portal/dts`, never trusted from the embedded `hierarchy.dt.name` on a meter record — directly because of the DT-007 finding (three meter records carry a stale/different DT name than the canonical transformer listing gives)
 
+## 5b. Bulk data extraction: batched crawl + shared merge logic, metadata-only
+`GET /api/meters/export` extends decision #3's auth model rather than inventing a second one: "authorised" means the caller already holds a valid Urja session, same header, same bar as every other endpoint — no separate bulk-access credential was introduced, because nothing in the assignment asked for one and adding one would be unverified scope creep.
+
+**Batching, not per-meter fan-out**: naively, a bulk export could be built as a loop calling the existing single-meter logic 403 times. Rejected — that's 403+ individual `/portal/meters/search` calls (effectively a denial-of-service pattern against someone else's legacy system) for data a single paginated crawl already returns in ~21 calls. `searchAllMeters`/`listAllTransformers` in `urjaClient.js` each do one full paginated crawl (one for meters, one for DTs), and the per-record merge happens in memory afterward.
+
+**Reused, not duplicated, merge logic**: the single-meter route and the bulk endpoint both resolve the same question — "for this meter, which fields come from the live search vs. the snapshot, and what's the canonical DT name" — so that logic was extracted into one function (`mergeMeterRecord` in `normalize.js`) and both routes call it. Avoids the two endpoints silently drifting apart on precedence rules over time.
+
+**Metadata-only scope, not full data dump**: the export includes nameplate, hierarchy, and geo per meter, but not consumption. 403 meters × months of 30-minute readings is 100k+ rows — a different shape of problem (pagination/streaming/date-range filtering) that the assignment's "consumption" domain is already served by the per-meter endpoint, not a flat export. Documented as a scope boundary, not an oversight.
+
+**Geo sourced from the snapshot here, not live**: the single-meter endpoint fetches `/geo` live per meter because one extra call for one meter is free. For 403 meters that's 403 extra live calls just for coordinates that are already in the snapshot — the same batching argument as above applies a second time, within one endpoint.
+
+**Two output formats**: JSON (for programmatic consumers) and CSV via `?format=csv` (flattened, for a spreadsheet) — same data, same `sources` provenance per record, just reshaped.
+
 ## 6. Testing strategy
 - Unit/integration tests mock the upstream `/portal/*` calls (e.g. with `nock`) using fixtures built directly from the raw JSON verified in Phase 2 (dts, geo, energy, bulk export sample) — deterministic, no live session required, doesn't hit the real portal or risk rate-limiting/locking the user's account.
 - A separate, clearly-labeled manual smoke-test script (not part of the automated suite, not run in CI) can optionally hit the live portal using a session token from a local, gitignored `.env`, for a final human sanity check. Documented in README as optional.
