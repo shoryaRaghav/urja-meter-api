@@ -113,7 +113,7 @@ browser, open DevTools → Application → Cookies, and copy the value of
 
 ## Running it
 
-Requires Node.js 20+.
+Requires Node.js 20.18+ (anything from the current 20, 22, or 24 LTS line is fine).
 
 ```bash
 npm install

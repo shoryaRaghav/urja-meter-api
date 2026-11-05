@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "supertest": "^7.3.1",
-    "undici": "^8.12.3",
+    "undici": "^7.16.0",
     "vitest": "^5.1.0"
   }
 }
