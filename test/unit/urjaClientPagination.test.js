@@ -31,6 +31,23 @@ describe('searchAllMeters', () => {
     const all = await searchAllMeters('token');
     expect(all).toEqual([{ meterId: 'J1' }]);
   });
+
+  it('preserves page order across more pages than the concurrency limit (bounded concurrent crawl)', async () => {
+    // 12 pages of 10 — more than the 5-at-a-time concurrency bound, so this
+    // only passes if results are reassembled in page order regardless of
+    // which concurrent request happens to resolve first.
+    const totalPages = 12;
+    const pageSize = 10;
+    const total = totalPages * pageSize;
+    for (let p = 1; p <= totalPages; p += 1) {
+      const batch = Array.from({ length: pageSize }, (_, i) => ({ meterId: `M${(p - 1) * pageSize + i}` }));
+      upstream.intercept({ path: `/portal/meters/search?q=&page=${p}`, method: 'GET' }).reply(200, jsonReply({ data: batch, total, page: p, pageSize }).data);
+    }
+
+    const all = await searchAllMeters('token');
+    expect(all).toHaveLength(total);
+    expect(all.map((m) => m.meterId)).toEqual(Array.from({ length: total }, (_, i) => `M${i}`));
+  });
 });
 
 describe('listAllTransformers', () => {

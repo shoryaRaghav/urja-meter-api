@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import express from 'express';
+import compression from 'compression';
 import swaggerUi from 'swagger-ui-express';
 import { sessionAuth } from './middleware/sessionAuth.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -13,6 +14,11 @@ const openapiSpec = JSON.parse(readFileSync(path.join(__dirname, '..', 'openapi.
 
 export function createApp() {
   const app = express();
+
+  // gzip response bodies over a small default threshold — mainly matters
+  // for the bulk export (GET /api/meters/export), the one response large
+  // enough for it to make a real difference.
+  app.use(compression());
 
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
 

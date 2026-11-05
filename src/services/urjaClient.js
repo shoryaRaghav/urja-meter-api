@@ -53,25 +53,59 @@ export function searchMeters({ q = '', page = 1 } = {}, sessionToken) {
   return upstreamGet(`/portal/meters/search?${qs}`, sessionToken);
 }
 
+const PAGE_CRAWL_CONCURRENCY = 5;
+const PAGE_CRAWL_MAX_PAGES = 1000; // defensive stop against a malformed/huge response, not an expected real limit
+
 /**
- * Walks every page of /portal/meters/search (q="") and returns the full
- * flat list. Used by the bulk-export endpoint to get a fresh nameplate
- * list for all meters with ~21 requests total, instead of one search call
- * per meter. The 1000-page cap is a defensive stop against a malformed or
- * unexpectedly huge upstream response, not an expected real limit.
+ * Walks every page of a paginated upstream list endpoint and returns the
+ * full flat list, in page order. Fetches page 1 first (its response tells
+ * us the real `total`/`pageSize`, so we know exactly how many pages exist
+ * without probing one at a time), then fetches the rest concurrently —
+ * bounded to PAGE_CRAWL_CONCURRENCY at once rather than firing all ~20
+ * pages simultaneously. That bound is a deliberate middle ground: still far
+ * fewer round-trips than a page-by-page serial crawl, without bursting a
+ * legacy system with every request at once.
+ *
+ * `fetchPage(page)` must return the upstream's raw `{data, total, pageSize}`
+ * envelope for that page.
+ */
+async function crawlAllPages(fetchPage) {
+  const first = await fetchPage(1);
+  const firstBatch = first.data ?? [];
+  if (firstBatch.length === 0) return [];
+
+  const total = first.total ?? firstBatch.length;
+  const pageSize = first.pageSize > 0 ? first.pageSize : firstBatch.length;
+  const totalPages = Math.min(Math.max(Math.ceil(total / pageSize), 1), PAGE_CRAWL_MAX_PAGES);
+
+  if (totalPages <= 1) return firstBatch;
+
+  const remainingPageNumbers = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+  const remainingBatches = new Array(remainingPageNumbers.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < remainingPageNumbers.length) {
+      const i = nextIndex;
+      nextIndex += 1;
+      const res = await fetchPage(remainingPageNumbers[i]);
+      remainingBatches[i] = res.data ?? [];
+    }
+  }
+
+  const workerCount = Math.min(PAGE_CRAWL_CONCURRENCY, remainingPageNumbers.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return [...firstBatch, ...remainingBatches.flat()];
+}
+
+/**
+ * Full flat list of every meter from /portal/meters/search (q=""). Used by
+ * the bulk-export endpoint to get a fresh nameplate list for all meters
+ * with ~21 requests total, instead of one search call per meter.
  */
 export async function searchAllMeters(sessionToken) {
-  const results = [];
-  let page = 1;
-  for (;;) {
-    const res = await searchMeters({ q: '', page }, sessionToken);
-    const batch = res.data ?? [];
-    results.push(...batch);
-    const total = res.total ?? results.length;
-    if (batch.length === 0 || results.length >= total || page > 1000) break;
-    page += 1;
-  }
-  return results;
+  return crawlAllPages((page) => searchMeters({ q: '', page }, sessionToken));
 }
 
 /**
@@ -103,23 +137,13 @@ export function listTransformers({ page = 1 } = {}, sessionToken) {
 }
 
 /**
- * Walks every page of /portal/dts and returns the full flat list. Used by
- * the bulk-export endpoint to build one dtCode -> canonical name map per
- * export call, instead of calling /portal/dts separately for every meter
- * (see the per-meter doc comment in routes/meters.js for why that's the
- * scaling concern this function exists to avoid). Same defensive page cap
- * as searchAllMeters.
+ * Full flat list of every transformer from /portal/dts. Used by the
+ * bulk-export endpoint to build one dtCode -> canonical name map per export
+ * call, instead of calling /portal/dts separately for every meter (see the
+ * per-meter doc comment in routes/meters.js for why that's the scaling
+ * concern this function exists to avoid). Same bounded-concurrency crawl as
+ * searchAllMeters.
  */
 export async function listAllTransformers(sessionToken) {
-  const results = [];
-  let page = 1;
-  for (;;) {
-    const res = await listTransformers({ page }, sessionToken);
-    const batch = res.data ?? [];
-    results.push(...batch);
-    const total = res.total ?? results.length;
-    if (batch.length === 0 || results.length >= total || page > 1000) break;
-    page += 1;
-  }
-  return results;
+  return crawlAllPages((page) => listTransformers({ page }, sessionToken));
 }

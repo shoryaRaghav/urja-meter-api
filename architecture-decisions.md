@@ -44,6 +44,12 @@ Our API's whole job is translating the portal's undocumented, inconsistent inter
 
 **Two output formats**: JSON (for programmatic consumers) and CSV via `?format=csv` (flattened, for a spreadsheet) — same data, same `sources` provenance per record, just reshaped.
 
+## 5c. Two performance passes on the bulk-export path
+Done after the initial implementation, once the batching design above was already in place:
+
+- **Bounded-concurrency page crawl.** `searchAllMeters`/`listAllTransformers` originally fetched pages one at a time, awaiting each before requesting the next. Since page 1's response already reports `total`/`pageSize`, the exact page count is known upfront — so the crawl now fetches page 1, then the remaining pages concurrently, capped at 5 in flight at once (`PAGE_CRAWL_CONCURRENCY` in `urjaClient.js`). Unbounded concurrency (firing all ~20 pages at once) was considered and rejected: the whole reason this is batched instead of done per-meter is to go easy on someone else's legacy system, and bursting every page simultaneously works against that same goal. 5 at a time keeps most of the latency win without that tradeoff.
+- **Gzip compression.** Added the standard `compression` Express middleware. The only response large enough for it to matter is the bulk export itself (200+ meter records); everything else stays well under the library's default 1KB threshold and is left uncompressed as-is.
+
 ## 6. Testing strategy
 - Unit/integration tests mock the upstream `/portal/*` calls (e.g. with `nock`) using fixtures built directly from the raw JSON verified in Phase 2 (dts, geo, energy, bulk export sample) — deterministic, no live session required, doesn't hit the real portal or risk rate-limiting/locking the user's account.
 - A separate, clearly-labeled manual smoke-test script (not part of the automated suite, not run in CI) can optionally hit the live portal using a session token from a local, gitignored `.env`, for a final human sanity check. Documented in README as optional.

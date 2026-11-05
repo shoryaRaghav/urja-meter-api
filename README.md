@@ -49,9 +49,12 @@ one. It's still gated by the same `Authorization` header as everything else
 — "authorised" here means a valid Urja session, same bar as every other
 endpoint, not a separate mechanism. Metadata only (no consumption — see
 "Known limitations"). It does one full paginated crawl of the upstream
-meter search and transformer list per call (not a lookup per meter), so
-it's efficient, but it still has to wait on ~23 upstream requests; it's not
-instant.
+meter search and transformer list per call (not a lookup per meter), ~21
+requests total — fetched 5 pages at a time rather than one at a time or all
+at once (see `architecture-decisions.md` "5c" for why), so it's quicker
+than a fully serial crawl without bursting every request at the legacy
+portal simultaneously. The response itself is gzip-compressed, since it's
+the one payload in this API large enough for that to matter.
 
 ```bash
 curl http://localhost:3000/api/meters/export \
